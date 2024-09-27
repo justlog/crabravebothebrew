@@ -12,7 +12,7 @@ import json
 from typing import Optional
 
 import telegram
-from telegram.ext import Dispatcher, MessageHandler, CommandHandler, InlineQueryHandler, Filters, CallbackContext
+from telegram.ext import MessageHandler, CommandHandler, InlineQueryHandler, filters, CallbackContext, Application, ContextTypes
 from PIL import Image, ImageDraw, ImageFont
 import libhoney
 from flask import Flask, render_template, request
@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 libhoney.init(writekey=os.environ.get('HONEYCOMB_KEY'), dataset="crabravebot", debug=True)
 
-font = ImageFont.truetype("assets/fonts/NotoSans-Regular.ttf", 48)
+font = ImageFont.truetype("assets/fonts/NotoSansHebrew-Regular.ttf", 48)
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
@@ -57,7 +57,8 @@ STYLES = get_styles()
 
 
 def word_wrap(text: str, draw: ImageDraw.ImageDraw, width: int) -> str:
-    text_width, text_height = draw.multiline_textsize(text, font=font)
+    left, top, right, bottom = draw.multiline_textbbox((0,0), text=text, font=font)
+    text_width = right-left
     if text_width > width:
         lines = text.splitlines()
         wrapped_text = []
@@ -98,7 +99,9 @@ def render_text(text: Optional[str], base: Image):
         text = ''
     draw = ImageDraw.Draw(base)
     text = word_wrap(text, draw, base.width)
-    text_width, text_height = draw.multiline_textsize(text, font=font)
+    left, top, right, bottom = draw.multiline_textbbox((0,0), text=text, font=font)
+    text_width = right-left
+    text_height = bottom-top
     center_x = base.width // 2
     center_y = base.height // 2
     draw.multiline_text((center_x - text_width / 2, center_y - text_height / 2), text, font=font,
@@ -142,7 +145,7 @@ def make_video(text: str, style_id: str):
         return result_file.read_bytes()
 
 
-def start(update: telegram.Update, context: CallbackContext):
+async def start(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     template = r"""Hi {you}!
 To shitpost, type @{me} and type the text you want to overlay over crab rave.
 This was originally made by @boringcactus in one afternoon when ze was bored.
@@ -152,10 +155,10 @@ and you can use this bot from the Web at https://{domain}/"""
     if you is None or len(you) == 0:
         you = update.effective_user.username
     text = template.format(you=you, me=context.bot.username, domain=os.environ.get('VIRTUAL_HOST', 'crabrave.boringcactus.com'))
-    context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
 
 
-def inline_query(update: telegram.Update, context: CallbackContext):
+async def inline_query(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     text = query.query
 
@@ -171,16 +174,16 @@ def inline_query(update: telegram.Update, context: CallbackContext):
             title=style.name,
         )
 
-    query.answer([make_result(s) for s in STYLES])
+    await query.answer([make_result(s) for s in STYLES])
 
 
-def message(update: telegram.Update, context: CallbackContext):
+async def message(update: telegram.Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == telegram.Chat.PRIVATE:
         text = update.effective_message.text
 
         logger.info('Got query %s', text)
 
-        update.effective_message.reply_video(BytesIO(make_video(text, 'classic')))
+        await update.effective_message.reply_video(BytesIO(make_video(text, 'classic')))
 
 
 @app.route('/')
@@ -216,14 +219,16 @@ def webhook():
     return 'ok'
 
 
-bot = telegram.Bot(token=TOKEN)
-bot.set_webhook('https://' + os.environ.get('VIRTUAL_HOST', 'crabrave.boringcactus.com') + WEBHOOK)
+#TODO: I have no idea what this is, seems to work without it...
+    # bot = telegram.Bot(token=TOKEN)
+    # bot.set_webhook('https://' + os.environ.get('VIRTUAL_HOST', 'crabrave.boringcactus.com') + WEBHOOK)
 update_queue = Queue()
-dp = Dispatcher(bot, update_queue, use_context=True)
+dp = Application.builder().token(TOKEN).build()
 # Add handlers
 dp.add_handler(CommandHandler('start', start))
 dp.add_handler(InlineQueryHandler(inline_query))
-dp.add_handler(MessageHandler(Filters.text, message))
+dp.add_handler(MessageHandler(filters.TEXT, message))
+dp.run_polling()
 
-thread = Thread(target=dp.start, name='dispatcher')
+thread = Thread(target=dp.start, name='application')
 thread.start()
